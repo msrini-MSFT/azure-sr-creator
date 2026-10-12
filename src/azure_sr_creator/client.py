@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 from urllib.parse import quote
 
@@ -24,11 +25,15 @@ class AzureSupportClient:
         self,
         credential: TokenCredential | None = None,
         session: requests.Session | None = None,
+        poll_interval: float = 5.0,
+        poll_timeout: float = 600.0,
     ) -> None:
         self.credential = credential or DefaultAzureCredential(
             exclude_interactive_browser_credential=False
         )
         self.session = session or self._build_session()
+        self.poll_interval = poll_interval
+        self.poll_timeout = poll_timeout
 
     @staticmethod
     def _build_session() -> requests.Session:
@@ -37,7 +42,7 @@ class AzureSupportClient:
             total=4,
             backoff_factor=0.8,
             status_forcelist=(408, 429, 500, 502, 503, 504),
-            allowed_methods=frozenset(("GET",)),
+            allowed_methods=frozenset(("GET", "PUT")),
             respect_retry_after_header=True,
         )
         session.mount("https://", HTTPAdapter(max_retries=retry))
@@ -95,3 +100,46 @@ class AzureSupportClient:
             f"/problemClassifications?api-version={self.SUPPORT_API_VERSION}"
         )
         return self._list_all(url)
+
+    def create_ticket(
+        self,
+        subscription_id: str,
+        ticket_name: str,
+        payload: dict[str, object],
+    ) -> dict[str, Any]:
+        resource_url = (
+            f"{self.ARM_ENDPOINT}/subscriptions/{quote(subscription_id, safe='')}"
+            f"/providers/Microsoft.Support/supportTickets/{quote(ticket_name, safe='')}"
+            f"?api-version={self.SUPPORT_API_VERSION}"
+        )
+        response = self._request("PUT", resource_url, json=payload)
+        if response.status_code == 200:
+            return response.json()
+        if response.status_code != 202:
+            raise AzureSupportError(
+                f"Azure returned unexpected success status {response.status_code}."
+            )
+
+        operation_url = response.headers.get("azure-asyncoperation") or response.headers.get(
+            "location"
+        )
+        if not operation_url:
+            raise AzureSupportError("Azure accepted the ticket without a polling URL.")
+        self._wait_for_operation(operation_url)
+        return self._request("GET", resource_url).json()
+
+    def _wait_for_operation(self, operation_url: str) -> None:
+        deadline = time.monotonic() + self.poll_timeout
+        while time.monotonic() < deadline:
+            response = self._request("GET", operation_url)
+            body = response.json() if response.content else {}
+            status = str(body.get("status", "Succeeded")).casefold()
+            if status == "succeeded":
+                return
+            if status in {"failed", "canceled", "cancelled"}:
+                raise AzureSupportError(
+                    f"Azure Support ticket operation ended with status '{status}'."
+                )
+            retry_after = float(response.headers.get("Retry-After", self.poll_interval))
+            time.sleep(max(retry_after, 0.1))
+        raise AzureSupportError("Timed out waiting for Azure to create the support ticket.")

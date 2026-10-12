@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
 from .client import AzureSupportClient
 from .models import BridgeDetails, ContactDetails, TicketDetails, normalize_severity
@@ -66,6 +68,8 @@ def run_workflow(
     client: AzureSupportClient,
     subscription: str | None = None,
     output: Path | None = None,
+    create: bool = False,
+    ticket_name: str | None = None,
     ask: Input = input,
 ) -> dict[str, Any]:
     selected_subscription = select_subscription(client.list_subscriptions(), subscription, ask)
@@ -129,5 +133,24 @@ def run_workflow(
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(f"{rendered}\n", encoding="utf-8")
         print(f"\nPayload written to {output}")
-    print("\nPayload construction complete. No support ticket was created.")
-    return payload
+    if not create:
+        print("\nTEST MODE: payload construction complete. No support ticket was created.")
+        return payload
+
+    resolved_ticket_name = ticket_name or (
+        f"sr-{datetime.now(timezone.utc):%Y%m%d%H%M%S}-{uuid4().hex[:8]}"
+    )
+    print(f"\nAzure resource name: {resolved_ticket_name}")
+    confirmation = ask("Type CREATE to submit this support ticket: ").strip()
+    if confirmation != "CREATE":
+        print("Support ticket creation cancelled.")
+        return payload
+
+    result = client.create_ticket(subscription_id, resolved_ticket_name, payload)
+    properties = result.get("properties", {})
+    print("\nSupport ticket created successfully.")
+    print(f"SupportTicketId: {properties.get('supportTicketId', result.get('name', 'unknown'))}")
+    print(f"Title: {properties.get('title', title)}")
+    print(f"Severity: {properties.get('severity', normalize_severity(severity_input))}")
+    print(f"Status: {properties.get('status', 'Submitted')}")
+    return result
