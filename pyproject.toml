@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "azure-sr-creator"
+version = "0.1.0"
+description = "Construct Azure Support REST API payloads with read-only discovery"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "azure-identity>=1.19.0,<2",
+    "requests>=2.32.0,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0,<9"]
+
+[project.scripts]
+azure-sr = "azure_sr_creator.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/azure_sr_creator"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
