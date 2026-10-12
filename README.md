@@ -19,10 +19,69 @@ Real creation has two gates: the `--create` flag and an interactive prompt requi
 
 - Python 3.10 or later.
 - An Azure subscription with a support plan eligible for the requested severity.
-- An Azure identity that can read subscriptions/support metadata. Creation also needs `Microsoft.Support/supportTickets/write` at the subscription scope, normally through an appropriate Support Request Contributor role.
+- An Azure identity with the roles described in [Managed identity permissions](#managed-identity-permissions).
 - A credential recognized by `DefaultAzureCredential`. For local use, `az login` is the simplest option; hosted applications should prefer managed identity.
 
 No client secret, token, or subscription ID is stored in source code.
+
+## Managed identity permissions
+
+For this interactive CLI, assign these two built-in roles to the managed identity (MSI) at the **target subscription scope**:
+
+| Built-in role | Why this workflow needs it |
+| --- | --- |
+| **Support Request Contributor** | Grants `Microsoft.Support/*`, including `Microsoft.Support/supportTickets/write`, which creates the SR and reads Support services/problem classifications. |
+| **Reader** | Grants control-plane read access, including the subscription enumeration performed at the start of every run. It does not allow the MSI to modify Azure resources. |
+
+The scope must be:
+
+```text
+/subscriptions/<subscription-id>
+```
+
+Do not assign these roles only to a resource group. Azure Support tickets are subscription-level resources, and this workflow calls the subscription-level APIs. Assign the roles on every subscription in which this MSI must create SRs.
+
+`Owner` and `Contributor` can also create support requests, but they grant much broader access and are not recommended for this application. The least-privilege built-in-role combination for the current workflow is **Support Request Contributor + Reader**.
+
+### Assign the roles with Azure CLI
+
+Use the managed identity's **principal (object) ID**, not its application/client ID or the Azure resource ID.
+
+```powershell
+$subscriptionId = "<target-subscription-id>"
+$objectId = "<managed-identity-principal-object-id>"
+$scope = "/subscriptions/$subscriptionId"
+
+az role assignment create `
+  --assignee-object-id $objectId `
+  --assignee-principal-type ServicePrincipal `
+  --role "Support Request Contributor" `
+  --scope $scope
+
+az role assignment create `
+  --assignee-object-id $objectId `
+  --assignee-principal-type ServicePrincipal `
+  --role "Reader" `
+  --scope $scope
+```
+
+The person or deployment identity running these commands must itself have permission to create role assignments, such as **Role Based Access Control Administrator** or **Owner**, at that scope.
+
+### Assign the roles in the Azure portal
+
+1. Open **Subscriptions** and select the subscription where the MSI will create SRs.
+2. Open **Access control (IAM)** and select **Add > Add role assignment**.
+3. Select **Support Request Contributor**.
+4. For **Assign access to**, select **Managed identity**, then choose the system-assigned or user-assigned identity.
+5. Review and assign the role.
+6. Repeat the process for the **Reader** role.
+7. Allow several minutes for new RBAC assignments to propagate before testing.
+
+### Configure managed identity authentication
+
+- **System-assigned MSI:** enable the identity on the Azure host and run the application there. `DefaultAzureCredential` detects it automatically.
+- **User-assigned MSI:** assign both roles to that identity and set `AZURE_CLIENT_ID` to its client ID in the host's environment so `DefaultAzureCredential` selects the intended identity.
+- **Local development:** `az login` authenticates as your user, not as the deployed MSI. Local success therefore validates your user's permissions unless you run from an Azure host using the managed identity.
 
 ## Setup
 
@@ -68,6 +127,135 @@ azure-sr --create --ticket-name "prod-vm-connectivity-20261012"
 If `--ticket-name` is omitted, the CLI generates a collision-resistant value such as `sr-20261012153045-a1b2c3d4`. This name is the ARM resource name, not the numeric `supportTicketId` assigned by Azure after creation.
 
 Generated payloads contain contact and bridge data. `final-payload.json` and the `payloads/` directory are ignored by Git to reduce the chance of publishing that data.
+
+## Interactive run: every step
+
+The CLI is interactive in both modes. The difference is only the final submission step. Start with test mode to inspect the exact request without creating an SR:
+
+```powershell
+azure-sr --test
+```
+
+The prompts appear in this order:
+
+### 1. Select the subscription
+
+When `--subscription` is omitted, the CLI lists enabled subscriptions visible to the current identity:
+
+```text
+Available subscriptions:
+  [1] Production Subscription
+  [2] Test Subscription
+Select subscriptions number: 1
+```
+
+The selected subscription ID becomes part of the final `PUT` URL. To skip this choice, pass an exact subscription display name or ID with `--subscription`. The workflow still verifies that the identity can see the subscription.
+
+### 2. Select the Azure service
+
+```text
+Available services:
+  [1] Virtual Machine running Linux
+  [2] Virtual Machine running Windows
+Select services number: 2
+```
+
+These values are retrieved live from `Microsoft.Support/services`. The full ID of the selected item becomes `properties.serviceId`; it is not hard-coded.
+
+### 3. Select the problem classification
+
+```text
+Available problem classifications:
+  [1] Cannot connect to virtual machine by using RDP or SSH
+  [2] Virtual machine unavailable
+Select problem classifications number: 2
+```
+
+The choices depend on the service selected in step 2. The selected full ID becomes `properties.problemClassificationId`.
+
+### 4. Enter the issue summary
+
+```text
+SR title: Production VM unavailable
+Problem description: The VM cannot be reached from any approved network.
+Severity (1/A/B/C) [C]: B
+```
+
+- **SR title** becomes `properties.title`.
+- **Problem description** starts `properties.description`.
+- **Severity** accepts `1`, `A`, `B`, or `C` and maps to the REST values documented in [Severity mapping](#severity-mapping). Press Enter to accept Sev C.
+
+### 5. Enter the support contact
+
+```text
+Contact details
+First name: Ada
+Last name: Lovelace
+Email: ada@example.com
+Phone number: +1 555 0100
+Country (ISO alpha-3) [USA]: USA
+Windows time zone [Pacific Standard Time]: Pacific Standard Time
+Contact method (email/phone) [email]: email
+```
+
+These answers build `properties.contactDetails`. The country must be an ISO alpha-3 code, the timezone must be a Microsoft Windows timezone name, and the contact method must be `email` or `phone`. A phone number is required by Azure for critical severities even when email is preferred.
+
+### 6. Enter the incident bridge
+
+```text
+Bridge details
+Bridge URL: https://teams.microsoft.com/l/meetup-join/...
+Conference ID (optional): 123 456 789
+Dial-in number (optional): +1 555 0199
+Bridge access notes (optional): Ask the incident commander to admit you.
+```
+
+The bridge URL is required. The remaining bridge fields can be left blank. Because the Support API has no bridge object, the workflow appends this information to `properties.description` in a readable block.
+
+### 7. Optionally identify the affected Azure resource
+
+```text
+Technical Azure resource ID (optional): /subscriptions/.../resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm01
+```
+
+For a technical request, enter the full ARM resource ID. It becomes `properties.technicalTicketDetails.resourceId`. Press Enter when the request is not tied to one specific Azure resource.
+
+### 8. Review the exact JSON payload
+
+The CLI prints the complete request body and writes it to `final-payload.json` unless `--output` specifies another path. Review the title, severity, service/category IDs, contact details, resource ID, and bridge block carefully.
+
+In test mode, the run ends here:
+
+```text
+TEST MODE: payload construction complete. No support ticket was created.
+```
+
+### 9. Confirm real creation
+
+For a real SR, run the same workflow with `--create`:
+
+```powershell
+azure-sr --create --subscription "Production Subscription"
+```
+
+After the payload preview, the CLI displays the ARM ticket resource name and requires an exact confirmation:
+
+```text
+Azure resource name: sr-20261012153045-a1b2c3d4
+Type CREATE to submit this support ticket: CREATE
+```
+
+Any response other than uppercase `CREATE` cancels the operation without calling the ticket-creation API. On success, the CLI waits for Azure's synchronous or asynchronous operation to finish and prints:
+
+```text
+Support ticket created successfully.
+SupportTicketId: 123456789012345
+Title: Production VM unavailable
+Severity: moderate
+Status: Open
+```
+
+The numeric `SupportTicketId` is Azure's case identifier. Keep `final-payload.json` protected because it contains contact and bridge information.
 
 ## End-to-end flow
 
