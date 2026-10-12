@@ -1,0 +1,23 @@
+{
+  "properties": {
+    "advancedDiagnosticConsent": "No",
+    "contactDetails": {
+      "country": "USA",
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "phoneNumber": "+1 555 0100",
+      "preferredContactMethod": "email",
+      "preferredSupportLanguage": "en-US",
+      "preferredTimeZone": "Pacific Standard Time",
+      "primaryEmailAddress": "ada@example.com"
+    },
+    "description": "The production VM cannot be reached.\n\nBridge details\n- URL: https://teams.microsoft.com/l/meetup-join/example\n- Conference ID: 123 456 789\n- Dial-in: +1 555 0199\n- Access notes: Ask the incident commander to admit you.",
+    "problemClassificationId": "/providers/Microsoft.Support/services/{serviceName}/problemClassifications/{problemClassificationName}",
+    "serviceId": "/providers/Microsoft.Support/services/{serviceName}",
+    "severity": "moderate",
+    "title": "Production VM unavailable",
+    "technicalTicketDetails": {
+      "resourceId": "/subscriptions/{subscriptionId}/resourceGroups/{resourceGroup}/providers/Microsoft.Compute/virtualMachines/{vmName}"
+    }
+  }
+}

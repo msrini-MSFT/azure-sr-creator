@@ -48,6 +48,8 @@ azure-sr --subscription "exact subscription name or ID" --output .\payloads\sr.j
 
 Omit `--subscription` to choose from enabled subscriptions. The CLI asks for the service, problem classification, SR details, contact details, bridge URL, conference ID, dial-in number, access notes, and optional technical Azure resource ID. It previews and writes `final-payload.json` by default. No mutating Azure request is made.
 
+See [`examples/payload.example.json`](examples/payload.example.json) for the exact generated request-body shape with sanitized values.
+
 The generated document is the body for a future `PUT` to:
 
 ```text
